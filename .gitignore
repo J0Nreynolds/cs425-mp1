@@ -1,32 +1,8 @@
-# Prerequisites
-*.d
+# Ignore the build dir
+build
 
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
+# Ignore any executables
+bin/*
 
-# Precompiled Headers
-*.gch
-*.pch
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
+# Ignore Mac specific files
+.DS_Store
