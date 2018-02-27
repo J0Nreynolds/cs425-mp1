@@ -9,25 +9,26 @@
 #include <sys/socket.h>
 #include <netdb.h>
 
+#include <iostream>
 #include <fstream>
 #include <unordered_map>
-#include <iostream>
 #include <sstream>
+
+#include "common.h"
 
 class Client {
 
-    struct connection {   // Declare connection struct type
-        std::string ip;
-        std::string port;
-        std::string status;
-    };
-
 public:
     Client();
+    Client(std::string ip, std::string port, unsigned int id);
+    int connect_to_server(std::string ip, std::string port, unsigned int id);
+    int get_socket_fd();
+    bool is_connected();
 
 private:
-    int connect_to_server(char* host, char* port);
-    std::unordered_map<unsigned int, struct connection> connections;
+    int socket_fd;
+    bool connected;
+
 };
 
 #endif
