@@ -61,10 +61,11 @@ void process_fds(){
     for(int i = 0; i < len; i ++){
         int fd = unprocessed_fds.front();
         unprocessed_fds.pop_front();
-        unsigned int pid;
+        unsigned int pid = 0;
         int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
     	if(read_bytes != sizeof(int)){
-    		std::cout << "Error: " << read_bytes << " bytes read instead of " << sizeof(int) << std::endl;
+            unprocessed_fds.push_back(fd); // Add back for an attempt later.
+    		// std::cout << "Error: " << read_bytes << " bytes read instead of " << sizeof(int) << std::endl;
     	}
         else {
             std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
@@ -107,7 +108,7 @@ void process_input(){
 }
 
 void close_server(int sig){
-    close(s->get_socket_fd());
+    s->close();
     end_session = true;
 }
 
@@ -130,7 +131,7 @@ int main(int argc, char **argv) {
     for(auto x: processes){
         unsigned int pid = x.first;
         struct connection info = x.second;
-        info.client = new Client(info.ip, info.port, pid);
+        info.client = new Client(info.ip, info.port, process_id);
     }
 
     while(!end_session){

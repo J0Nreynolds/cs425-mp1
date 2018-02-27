@@ -3,23 +3,25 @@
 /**
  * Client class constructors
  */
-Client::Client():
+Client::Client(unsigned int id):
 	connected(false),
-	socket_fd(-1)
+	socket_fd(-1),
+	process_id(id)
 {
 }
 
 Client::Client(std::string ip, std::string port, unsigned int id):
 	connected(false),
-	socket_fd(-1)
+	socket_fd(-1),
+	process_id(id)
 {
-   connect_to_server(ip, port, id);
+   connect_to_server(ip, port);
 }
 
 /**
  * Connects to server and returns the socket file descriptor upon success
  */
-int Client::connect_to_server(std::string ip, std::string port, unsigned int id){
+int Client::connect_to_server(std::string ip, std::string port){
 	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0); // Get a file descriptor for a streaming (TCP) socket
 	if(socket_fd < 0) exit(1);
 
@@ -34,13 +36,13 @@ int Client::connect_to_server(std::string ip, std::string port, unsigned int id)
 		exit(1);
 	}
 
-	if(connect(socket_fd, result->ai_addr, result->ai_addrlen) == -1){ // Connect to host using sock_fd and resulting addrinfo
+	if(connect(this->socket_fd, result->ai_addr, result->ai_addrlen) == -1){ // Connect to host using sock_fd and resulting addrinfo
 		perror("connect");
 		return -1;
     }
 	this->connected = true;
-	
-	int written = write_all_to_socket(socket_fd, (char *) &id, sizeof(int));
+	std::cout<< "Writing id: " << this->process_id << " from fd: " << this->socket_fd << std::endl;
+	int written = write_all_to_socket(this->socket_fd, (char *) &this->process_id, sizeof(int));
 	if(written != sizeof(int)){
 		std::cout << "Error: " << written << " bytes written instead of " << sizeof(int) << std::endl;
 	}

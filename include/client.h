@@ -19,13 +19,14 @@
 class Client {
 
 public:
-    Client();
+    Client(unsigned int id);
     Client(std::string ip, std::string port, unsigned int id);
-    int connect_to_server(std::string ip, std::string port, unsigned int id);
+    int connect_to_server(std::string ip, std::string port);
     int get_socket_fd();
     bool is_connected();
 
 private:
+    unsigned int process_id;
     int socket_fd;
     bool connected;
 

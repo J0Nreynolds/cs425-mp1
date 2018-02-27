@@ -16,7 +16,11 @@ Server::Server(std::string port, int max_clients){
  */
 void Server::start(std::string port, int max_clients){
 	int error;
-	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0);;
+	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
+	if(this->socket_fd < 0){ exit(1); }
+	int optval = 1;
+	setsockopt(this->socket_fd, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval));
+	setsockopt(this->socket_fd, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
     fcntl(this->socket_fd, F_SETFL, fcntl(this->socket_fd, F_GETFL, 0) | O_NONBLOCK); // Set to non-blocking
 
 	struct addrinfo hints, *result;
@@ -54,6 +58,17 @@ int Server::accept_client(){
 		return client_fd;
 	}
 	return -1;
+}
+void Server::close(){
+	close_clients();
+	::close(this->socket_fd);
+}
+
+void Server::close_clients(){
+	for(auto fd: client_fds){
+		shutdown(fd, SHUT_RDWR);
+		::close(fd);
+	}
 }
 
 int Server::get_socket_fd(){

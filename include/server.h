@@ -25,8 +25,10 @@ public:
     void start(std::string port, int max_clients);
     int get_socket_fd();
     int accept_client();
+    void close();
 
 private:
+    void close_clients();
     int socket_fd;
     std::vector<int> client_fds;
 
