@@ -38,6 +38,8 @@ int Client::connect_to_server(std::string ip, std::string port, unsigned int id)
 		perror("connect");
 		return -1;
     }
+	this->connected = true;
+	
 	int written = write_all_to_socket(socket_fd, (char *) &id, sizeof(int));
 	if(written != sizeof(int)){
 		std::cout << "Error: " << written << " bytes written instead of " << sizeof(int) << std::endl;
