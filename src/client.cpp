@@ -35,7 +35,7 @@ int Client::connect_to_server(std::string ip, std::string port){
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
 		exit(1);
 	}
-
+	std::cout << "Process " << this->process_id << " attempting connect to server at port " << port << std::endl;
 	if(connect(this->socket_fd, result->ai_addr, result->ai_addrlen) == -1){ // Connect to host using sock_fd and resulting addrinfo
 		perror("connect");
 		return -1;

@@ -69,10 +69,10 @@ void process_fds(){
     	}
         else {
             std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
-            if(processes[pid].client != NULL){
-                if(!processes[pid].client->is_connected()){
-                    // processes[pid].client->connect_to_server(processes[pid].ip, processes[pid].port, pid);
-                }
+            if(pid != process_id && !processes[pid].client->is_connected()){
+                struct connection info = processes[pid];
+                std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
+                info.client->connect_to_server(info.ip, info.port);
             }
         }
     }
@@ -130,8 +130,7 @@ int main(int argc, char **argv) {
 
     for(auto x: processes){
         unsigned int pid = x.first;
-        struct connection info = x.second;
-        info.client = new Client(info.ip, info.port, process_id);
+        processes[pid].client = new Client(processes[pid].ip, processes[pid].port, process_id);
     }
 
     while(!end_session){
