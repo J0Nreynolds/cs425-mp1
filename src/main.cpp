@@ -23,10 +23,10 @@ struct connection {   // Declare connection struct type
 struct fd_information {
     unsigned int pid;
     bool server_owned;
+    int event_idx;
 };
 
 std::unordered_map<unsigned int, struct connection> processes;
-std::list<unsigned int> unprocessed_fds;
 std::unordered_map<unsigned int, struct fd_information> fd_info;
 
 unsigned int process_id;
@@ -38,7 +38,7 @@ static struct kevent* chlist;
 static struct kevent* evlist;
 
 /**
- * Initializes the clients for this process and attempts to connect to other servers.
+ * Initializes the unordered_map holding the information needed to connect to each process.
  */
 void parse_config(){
 	std::ifstream config_file("multicast.config");
@@ -67,11 +67,30 @@ void parse_config(){
 }
 
 /**
+ * Removes kevent listener for file descriptor
+ */
+void remove_fd_from_kevent(int fd){
+    int idx = fd_info[fd].event_idx;
+    fd_info.erase(fd);
+
+    event_idx -= 1;
+    unsigned int temp_fd = chlist[event_idx].ident;
+    if(temp_fd != fd){ // We want to swap current event for last event, unless the current event is last
+        // Deleting last event
+        EV_SET(&chlist[event_idx], temp_fd, EVFILT_READ, EV_DELETE, 0, 0, 0);
+        // Reenable last event's fd in event we just deleted
+        EV_SET(&chlist[idx], temp_fd, EVFILT_READ, EV_ADD | EV_ENABLE, 0, 0, 0);
+    }
+    // else event we want to remove is at end
+    // -> do nothing, we already decremented the event_idx to exclude it from kevent call
+}
+
+/**
  * Processes any updated file descriptors
  */
 void process_fds(){
-    struct timespec tmout = { 0, 0 };
-    int nev = kevent(kq, chlist, event_idx, evlist, event_idx, &tmout);   /* return immediately if no new events */
+    struct timespec tmout = { 0, 0 };  /* return immediately if no new events */
+    int nev = kevent(kq, chlist, event_idx, evlist, event_idx, &tmout);
     if (nev == -1) {
        perror("kevent()");
        exit(1);
@@ -79,38 +98,49 @@ void process_fds(){
     for(int i = 0; i < nev; i ++){
         int fd = evlist[i].ident;
         if (evlist[i].flags & EV_ERROR) {                /* report errors */
-           fprintf(stderr, "EV_ERROR: %s\n", strerror(evlist[i].data));
+           fprintf(stderr, "EV_ERROR: %s\n%d\n", strerror(evlist[i].data), fd);
            exit(1);
         };
-        unsigned int pid = 0;
-        int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
-    	if(read_bytes != sizeof(int)){
-            unprocessed_fds.push_back(fd); // Add back for an attempt later.
-    		// std::cout << "Error: " << read_bytes << " bytes read instead of " << sizeof(int) << std::endl;
-    	}
-        else {
-            std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
-            if(fd_info[fd].server_owned){
-                fd_info[fd].pid = pid;
-                if(pid != process_id && !processes[pid].client->is_connected()){
-                    struct connection info = processes[pid];
-                    std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
-                    int client_fd = info.client->connect_to_server(info.ip, info.port);
-                    if(client_fd >= 0){
-                        fd_information f_info;
-                        f_info.pid = pid;
-                        f_info.server_owned = false;
-                        std::pair<unsigned int, struct fd_information> entry(client_fd, f_info);
-                        fd_info.insert(entry);
+        if(fd_info[fd].server_owned){ // Then it's a remote client telling us their ID so we can connect to them
+            // Read the process id sent from the client
+            unsigned int pid = 0;
+            int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
+        	if(read_bytes == 0){ // Handle client disconnect
+                for(int i = 0; i < event_idx; i++){
+                    std::cout << chlist[i].ident << " ";
+                }
+                std::cout << std::endl;
+                std::cout << "Socket fd " << fd << " for process " << fd_info[fd].pid << " disconnected." << std::endl;
+                ::close(fd);
+                remove_fd_from_kevent(fd);
 
-                        /* Initialize kevent structure. */
-                        EV_SET(&chlist[event_idx++], client_fd, EVFILT_READ, EV_ADD, 0, 0, 0);
-                    }
+                return;
+            }
+            else if(read_bytes == -1){ // Error case
+                std::cout << "Error reading from socket" <<read_bytes<<std::endl;
+                exit(1);
+        	}
+            std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
+            fd_info[fd].pid = pid;
+            if(pid != process_id && !processes[pid].client->is_connected()){ // If we don't already have a client for pid
+                struct connection info = processes[pid];
+                std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
+                int client_fd = info.client->connect_to_server(info.ip, info.port);
+                if(client_fd >= 0){ // Success
+                    fd_information f_info;
+                    f_info.pid = pid;
+                    f_info.server_owned = false;
+                    f_info.event_idx = event_idx;
+                    std::pair<unsigned int, struct fd_information> entry(client_fd, f_info);
+                    fd_info.insert(entry);
+
+                    /* Initialize kevent structure. */
+                    EV_SET(&chlist[event_idx++], client_fd, EVFILT_READ, EV_ADD, 0, 0, 0);
                 }
             }
-            else {
-                //Then there is an update from another server. Process.
-            }
+        }
+        else { //Then there is an update from another server. TODO: Process the update.
+
         }
     }
 }
@@ -145,6 +175,18 @@ void process_input(){
 }
 
 void close_server(int sig){
+    for(auto x: fd_info){
+        int fd = x.first;
+        struct fd_information info = x.second;
+        if(info.server_owned){
+            shutdown(fd, SHUT_RDWR);
+            ::close(fd);
+            remove_fd_from_kevent(fd);
+        }
+        else {
+            ::close(fd);
+        }
+    }
     s->close();
     end_session = true;
 }
@@ -177,7 +219,16 @@ int main(int argc, char **argv) {
         unsigned int pid = x.first;
         processes[pid].client = new Client(processes[pid].ip, processes[pid].port, process_id);
         if(processes[pid].client->is_connected()){
+            fd_information f_info;
+            f_info.pid = pid;
+            f_info.server_owned = false;
+            f_info.event_idx = event_idx;
+            int client_fd = processes[pid].client->get_socket_fd();
+            std::pair<unsigned int, struct fd_information> entry(client_fd, f_info);
+            fd_info.insert(entry);
 
+            /* Initialize kevent structure. */
+            EV_SET(&chlist[event_idx++], client_fd, EVFILT_READ, EV_ADD, 0, 0, 0);
         }
     }
 
@@ -187,6 +238,7 @@ int main(int argc, char **argv) {
             fd_information info;
             info.pid = -1;
             info.server_owned = true;
+            info.event_idx = event_idx;
             std::pair<unsigned int, struct fd_information> entry(fd, info);
             fd_info.insert(entry);
 
