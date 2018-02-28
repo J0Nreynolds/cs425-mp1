@@ -66,6 +66,14 @@ void parse_config(){
 	}
 }
 
+void print_kevents(){
+    std::cout << event_idx << " events: ";
+    for(int i = 0; i < event_idx; i++){
+        std::cout << chlist[i].ident << " ";
+    }
+    std::cout << std::endl;
+}
+
 /**
  * Removes kevent listener for file descriptor
  */
@@ -103,20 +111,15 @@ void process_fds(){
         };
         if(fd_info[fd].server_owned){ // Then it's a remote client telling us their ID so we can connect to them
             // Read the process id sent from the client
-            unsigned int pid = 0;
-            int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
-        	if(read_bytes == 0){ // Handle client disconnect
-                for(int i = 0; i < event_idx; i++){
-                    std::cout << chlist[i].ident << " ";
-                }
-                std::cout << std::endl;
+        	if(evlist[i].flags & EV_EOF){ // Handle client disconnect
                 std::cout << "Socket fd " << fd << " for process " << fd_info[fd].pid << " disconnected." << std::endl;
                 ::close(fd);
                 remove_fd_from_kevent(fd);
-
                 return;
             }
-            else if(read_bytes == -1){ // Error case
+            unsigned int pid = 0;
+            int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
+            if(read_bytes == -1){ // Error case
                 std::cout << "Error reading from socket" <<read_bytes<<std::endl;
                 exit(1);
         	}
@@ -156,6 +159,7 @@ void process_input(){
     std::string line;
     std::getline( std::cin, line );
     if(line.empty()){
+        std::cin.clear();
         return;
     }
 
@@ -175,6 +179,8 @@ void process_input(){
 }
 
 void close_server(int sig){
+    delete[] chlist;
+    delete[] evlist;
     for(auto x: fd_info){
         int fd = x.first;
         struct fd_information info = x.second;
@@ -188,6 +194,7 @@ void close_server(int sig){
         }
     }
     s->close();
+    delete s;
     end_session = true;
 }
 
@@ -205,8 +212,8 @@ int main(int argc, char **argv) {
 
     parse_config();
 
-    chlist = new struct kevent[processes.size()];
-    evlist = new struct kevent[processes.size()];
+    chlist = new struct kevent[2*processes.size()]; // 2 fds per process
+    evlist = new struct kevent[2*processes.size()]; // 2 fds per process
 
     if ((kq = kqueue()) == -1) {
        perror("kqueue");
@@ -232,6 +239,10 @@ int main(int argc, char **argv) {
         }
     }
 
+    // Set cin to be non-blocking
+    int flags = fcntl(0, F_GETFL, 0);
+    fcntl(0, F_SETFL, flags | O_NONBLOCK);
+
     while(!end_session){
         int fd = s->accept_client();
         if(fd >= 0){
@@ -246,7 +257,7 @@ int main(int argc, char **argv) {
             EV_SET(&chlist[event_idx++], fd, EVFILT_READ, EV_ADD, 0, 0, 0);
         }
         process_fds();
-        // process_input();
+        process_input();
         // attempt_reconnections();
     }
 }

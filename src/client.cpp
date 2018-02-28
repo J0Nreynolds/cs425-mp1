@@ -23,7 +23,7 @@ Client::Client(const std::string& ip, const std::string& port, unsigned int id):
  */
 int Client::connect_to_server(const std::string& ip, const std::string& port){
 	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0); // Get a file descriptor for a streaming (TCP) socket
-	if(socket_fd < 0) exit(1);
+	if(this->socket_fd < 0) exit(1);
 
 	struct addrinfo hints, *result; // addrinfo instances to hold host information
 	memset(&hints, 0, sizeof(struct addrinfo)); //clear memory
@@ -37,6 +37,7 @@ int Client::connect_to_server(const std::string& ip, const std::string& port){
 	}
 	std::cout << "Process " << this->process_id << " attempting connect to server at port " << port << std::endl;
 	if(connect(this->socket_fd, result->ai_addr, result->ai_addrlen) == -1){ // Connect to host using sock_fd and resulting addrinfo
+		::close(this->socket_fd);
 		perror("connect");
 		return -1;
     }
@@ -48,7 +49,7 @@ int Client::connect_to_server(const std::string& ip, const std::string& port){
 	}
 
 	freeaddrinfo(result); // free memory pointed to by result
-	return socket_fd;
+	return this->socket_fd;
 }
 
 int Client::get_socket_fd(){
