@@ -20,8 +20,8 @@ class Client {
 
 public:
     Client(unsigned int id);
-    Client(std::string ip, std::string port, unsigned int id);
-    int connect_to_server(std::string ip, std::string port);
+    Client(const std::string& ip, const std::string& port, unsigned int id);
+    int connect_to_server(const std::string& ip, const std::string& port);
     int get_socket_fd();
     bool is_connected();
 

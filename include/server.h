@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <vector>
+#include <unordered_map>
 
 #include "common.h"
 
@@ -22,13 +23,13 @@ class Server {
 
 public:
     Server(std::string port, int max_clients);
-    void start(std::string port, int max_clients);
+    void start(const std::string& port, int max_clients);
     int get_socket_fd();
     int accept_client();
     void close();
 
 private:
-    void close_clients();
+    void close_clients(const std::unordered_map<unsigned int, unsigned int>& fd_to_id);
     int socket_fd;
     std::vector<int> client_fds;
 

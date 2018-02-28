@@ -10,7 +10,7 @@ Client::Client(unsigned int id):
 {
 }
 
-Client::Client(std::string ip, std::string port, unsigned int id):
+Client::Client(const std::string& ip, const std::string& port, unsigned int id):
 	connected(false),
 	socket_fd(-1),
 	process_id(id)
@@ -21,7 +21,7 @@ Client::Client(std::string ip, std::string port, unsigned int id):
 /**
  * Connects to server and returns the socket file descriptor upon success
  */
-int Client::connect_to_server(std::string ip, std::string port){
+int Client::connect_to_server(const std::string& ip, const std::string& port){
 	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0); // Get a file descriptor for a streaming (TCP) socket
 	if(socket_fd < 0) exit(1);
 

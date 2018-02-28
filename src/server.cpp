@@ -1,9 +1,5 @@
 #include "server.h"
 
-void nick(){
-	printf("i love honey\n");
-}
-
 /**
  * Server constructor
  */
@@ -14,7 +10,7 @@ Server::Server(std::string port, int max_clients){
 /**
  * Begins listening for incoming connections on the passed port
  */
-void Server::start(std::string port, int max_clients){
+void Server::start(const std::string& port, int max_clients){
 	int error;
 	this->socket_fd = socket(AF_INET, SOCK_STREAM, 0);
 	if(this->socket_fd < 0){ exit(1); }
@@ -48,28 +44,28 @@ void Server::start(std::string port, int max_clients){
 	freeaddrinfo(result);
 }
 
+/**
+ * Accepts a new client if there are any attempting to connect.
+ * Returns file descriptor which can be used to read from the socket connection
+ */
 int Server::accept_client(){
 	int client_fd = accept(this->socket_fd, NULL, NULL);
 	if(client_fd >= 0){
 		int flags = fcntl(client_fd, F_GETFL, 0);
 		fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-		client_fds.push_back(client_fd);
 		std::cout << "Client with fd " << client_fd << " connected." << std::endl;
 		return client_fd;
 	}
 	return -1;
 }
+
+/**
+ * Closes connections with clients and finally closes the listening socket
+ */
 void Server::close(){
-	close_clients();
 	::close(this->socket_fd);
 }
 
-void Server::close_clients(){
-	for(auto fd: client_fds){
-		shutdown(fd, SHUT_RDWR);
-		::close(fd);
-	}
-}
 
 int Server::get_socket_fd(){
 	return this->socket_fd;
