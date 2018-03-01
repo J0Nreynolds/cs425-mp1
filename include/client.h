@@ -24,6 +24,7 @@ public:
     int connect_to_server(const std::string& ip, const std::string& port);
     int get_socket_fd();
     bool is_connected();
+    void close();
 
 private:
     unsigned int process_id;

@@ -59,3 +59,8 @@ int Client::get_socket_fd(){
 bool Client::is_connected(){
 	return this->connected;
 }
+
+void Client::close(){
+	::close(this->socket_fd);
+	this->connected = false;
+}

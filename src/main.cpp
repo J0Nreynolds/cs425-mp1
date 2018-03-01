@@ -2,6 +2,8 @@
 #include <list>
 #include <thread>
 #include <mutex>
+#include <chrono>
+#include <ctime>
 
 #include <signal.h>
 #include <sys/types.h>
@@ -18,10 +20,11 @@ struct connection {   // Declare connection struct type
     std::string ip;
     std::string port;
     Client* client;
+    int server_fd;
 };
 
 struct fd_information {
-    unsigned int pid;
+    int pid;
     bool server_owned;
     int event_idx;
 };
@@ -36,6 +39,8 @@ static int kq;
 static int event_idx = 0;
 static struct kevent* chlist;
 static struct kevent* evlist;
+static const struct timespec tmout = { 0, 0 };  /* return immediately if no new events */
+
 
 /**
  * Initializes the unordered_map holding the information needed to connect to each process.
@@ -58,6 +63,7 @@ void parse_config(){
 		connection_info.ip = ip;
 		connection_info.port = port;
 		connection_info.client = NULL;
+		connection_info.server_fd = -1;
 
 		// Create pair for insertion
 		std::pair<unsigned int, struct connection> entry(pid, connection_info);
@@ -66,8 +72,11 @@ void parse_config(){
 	}
 }
 
+/**
+ * Helper to print the current changelist we're watching through kqueue
+ */
 void print_kevents(){
-    std::cout << event_idx << " events: ";
+    std::cout << event_idx << " fds: ";
     for(int i = 0; i < event_idx; i++){
         std::cout << chlist[i].ident << " ";
     }
@@ -77,7 +86,7 @@ void print_kevents(){
 /**
  * Removes kevent listener for file descriptor
  */
-void remove_fd_from_kevent(int fd){
+void remove_fd_from_kqueue(int fd){
     int idx = fd_info[fd].event_idx;
     fd_info.erase(fd);
 
@@ -92,31 +101,73 @@ void remove_fd_from_kevent(int fd){
     // else event we want to remove is at end
     // -> do nothing, we already decremented the event_idx to exclude it from kevent call
 }
+/**
+ * Adds kevent listener for file descriptor
+ * If pid of process is unknown, a pid of -1 should be used to indicate that
+ */
+void add_fd_to_kqueue(int fd, int pid, bool server_owned){
+    // Create entry in fd_info for passed fd
+    if(fd == -1) return;
+    fd_information f_info;
+    f_info.pid = pid;
+    f_info.server_owned = server_owned;
+    f_info.event_idx = event_idx;
+
+    std::pair<unsigned int, struct fd_information> entry(fd, f_info);
+    fd_info.insert(entry);
+
+    /* Initialize kevent structure. */
+    EV_SET(&chlist[event_idx++], fd, EVFILT_READ, EV_ADD, 0, 0, 0);
+}
+
+
+void unicast_receive(int source, std::string message){
+    auto end = std::chrono::system_clock::now();
+    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
+    __int64_t ms =  end.time_since_epoch().count();
+    std::cout << "MS: " << ms << std::endl;
+    std::cout << "Received \"" << message << "\" from process " << source <<  ", system time is " << std::ctime(&end_time) << std::endl;
+}
+
+void unicast_send(int dest, std::string message){
+    std::unordered_map<unsigned int, struct connection>::const_iterator result = processes.find(dest);
+    if(result == processes.end()){
+        std::cout << "Error: could not unicast send to non-existent pid" << std::endl;
+        return;
+    }
+    struct connection info = result->second;
+    std::cout << "Sending fd " << info.server_fd << ": '" << message <<  "' to pid: " << dest << std::endl;
+    write_all_to_socket(info.server_fd, message.c_str(), message.size()+1);
+}
+
+void multicast_send(std::string message){
+
+}
 
 /**
  * Processes any updated file descriptors
  */
 void process_fds(){
-    struct timespec tmout = { 0, 0 };  /* return immediately if no new events */
     int nev = kevent(kq, chlist, event_idx, evlist, event_idx, &tmout);
     if (nev == -1) {
        perror("kevent()");
        exit(1);
     }
-    for(int i = 0; i < nev; i ++){
-        int fd = evlist[i].ident;
-        if (evlist[i].flags & EV_ERROR) {                /* report errors */
+    for(int i = 0; i < nev; i ++){ // For each event triggered
+        int fd = evlist[i].ident;   // Get the file descriptor
+        if (evlist[i].flags & EV_ERROR) { // report errors if any
            fprintf(stderr, "EV_ERROR: %s\n%d\n", strerror(evlist[i].data), fd);
            exit(1);
         };
+        if(evlist[i].flags & EV_EOF){ // Handle disconnects
+            std::cout << "Socket fd " << fd << " for process " << fd_info[fd].pid << " disconnected." << std::endl;
+            if(!fd_info[fd].server_owned){ processes[fd_info[fd].pid].client->close(); } // Close fd and set connected false
+            else { ::close(fd); } // Otherwise close fd and wait for new client to connect
+            remove_fd_from_kqueue(fd);
+            return;
+        }
         if(fd_info[fd].server_owned){ // Then it's a remote client telling us their ID so we can connect to them
             // Read the process id sent from the client
-        	if(evlist[i].flags & EV_EOF){ // Handle client disconnect
-                std::cout << "Socket fd " << fd << " for process " << fd_info[fd].pid << " disconnected." << std::endl;
-                ::close(fd);
-                remove_fd_from_kevent(fd);
-                return;
-            }
             unsigned int pid = 0;
             int read_bytes = read_all_from_socket(fd, (char *) &pid, sizeof(int));
             if(read_bytes == -1){ // Error case
@@ -124,32 +175,29 @@ void process_fds(){
                 exit(1);
         	}
             std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
+
+            // Update process info with server file descriptor
+            struct connection& info = processes[pid];
+            info.server_fd = fd;
             fd_info[fd].pid = pid;
+
             if(pid != process_id && !processes[pid].client->is_connected()){ // If we don't already have a client for pid
-                struct connection info = processes[pid];
                 std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
                 int client_fd = info.client->connect_to_server(info.ip, info.port);
                 if(client_fd >= 0){ // Success
-                    fd_information f_info;
-                    f_info.pid = pid;
-                    f_info.server_owned = false;
-                    f_info.event_idx = event_idx;
-                    std::pair<unsigned int, struct fd_information> entry(client_fd, f_info);
-                    fd_info.insert(entry);
-
-                    /* Initialize kevent structure. */
-                    EV_SET(&chlist[event_idx++], client_fd, EVFILT_READ, EV_ADD, 0, 0, 0);
+                    add_fd_to_kqueue(client_fd, pid, false);
                 }
             }
         }
         else { //Then there is an update from another server. TODO: Process the update.
 
+            int read_len = evlist[i].data;
+            std::cout << "Received message with " << read_len << " bytes from " << fd << std::endl;
+            char buf[evlist[i].data];
+            read_all_from_socket(fd, buf, read_len);
+            unicast_receive(fd_info[fd].pid, std::string(buf));
         }
     }
-}
-
-void check_messages(){
-
 }
 
 void process_input(){
@@ -164,21 +212,47 @@ void process_input(){
     }
 
     int space1_idx = line.find(' ', 0);
-    if(space1_idx == std::string::npos){ return; } // incorrect command format
+    if(space1_idx == std::string::npos){ return; } // incorrect command format - must have at least one space
     int space2_idx = line.find(' ', space1_idx+1);
-    if(space2_idx == std::string::npos){ return; } // incorrect command format
+    if(space2_idx == std::string::npos){
+        // Must be a multicast send
+        command = line.substr(0, space1_idx);
+        message = line.substr(space1_idx + 1, std::string::npos);
 
-    command = line.substr(0, space1_idx);
-    dest_string = line.substr(space1_idx+1, space2_idx-space1_idx);
-    message = line.substr(space2_idx + 1, std::string::npos);
-    sscanf(dest_string.c_str(), "%d", &destination);
+        std::cout << "Command: " << command << std::endl;
+        std::cout << "Message: " << message << std::endl;
 
-    std::cout << "Command: " << command << std::endl;
-    std::cout << "Destination: " << destination << std::endl;
-    std::cout << "Message: " << message << std::endl;
+        if(command.compare("msend") == 0){
+            multicast_send(message);
+        }
+        else {
+            std::cout << "Error: invalid command!" << std::endl;
+        }
+    }
+    else {
+        //Assume it's a unicast send
+        command = line.substr(0, space1_idx);
+        dest_string = line.substr(space1_idx+1, space2_idx-space1_idx);
+        message = line.substr(space2_idx + 1, std::string::npos);
+        sscanf(dest_string.c_str(), "%d", &destination);
+
+        std::cout << "Command: " << command << std::endl;
+        std::cout << "Destination: " << destination << std::endl;
+        std::cout << "Message: " << message << std::endl;
+        if(command.compare("send") == 0){
+            unicast_send(destination, message);
+        }
+        else {
+            std::cout << "Error: invalid command!" << std::endl;
+        }
+    }
+
 }
 
-void close_server(int sig){
+/**
+ * Frees memory and closes all file descriptors still in use
+ */
+void close_process(int sig){
     delete[] chlist;
     delete[] evlist;
     for(auto x: fd_info){
@@ -187,7 +261,7 @@ void close_server(int sig){
         if(info.server_owned){
             shutdown(fd, SHUT_RDWR);
             ::close(fd);
-            remove_fd_from_kevent(fd);
+            remove_fd_from_kqueue(fd);
         }
         else {
             ::close(fd);
@@ -195,6 +269,10 @@ void close_server(int sig){
     }
     s->close();
     delete s;
+    for(auto x: processes){
+        struct connection info = x.second;
+        delete info.client;
+    }
     end_session = true;
 }
 
@@ -202,9 +280,13 @@ int main(int argc, char **argv) {
     std::cout << "Starting process with id " << argv[1] << std::endl;
     sscanf(argv[1], "%d", &process_id);
 
+    // Set cin to be non-blocking
+    int flags = fcntl(0, F_GETFL, 0);
+    fcntl(0, F_SETFL, flags | O_NONBLOCK);
+
     struct sigaction act;
     memset(&act, '\0', sizeof(act));
-    act.sa_handler = close_server;
+    act.sa_handler = close_process;
     if (sigaction(SIGINT, &act, NULL) < 0) {
         perror("sigaction");
         return 1;
@@ -221,43 +303,31 @@ int main(int argc, char **argv) {
     }
 
     s = new Server(processes[process_id].port, processes.size());
+    // Set up kevent to fire events for new connections on server's listening socket
+    struct kevent server_event, server_result;
+    EV_SET(&server_event, s->get_socket_fd(), EVFILT_READ, EV_ADD, 0, 0, 0);
 
     for(auto x: processes){
         unsigned int pid = x.first;
         processes[pid].client = new Client(processes[pid].ip, processes[pid].port, process_id);
-        if(processes[pid].client->is_connected()){
-            fd_information f_info;
-            f_info.pid = pid;
-            f_info.server_owned = false;
-            f_info.event_idx = event_idx;
-            int client_fd = processes[pid].client->get_socket_fd();
-            std::pair<unsigned int, struct fd_information> entry(client_fd, f_info);
-            fd_info.insert(entry);
-
-            /* Initialize kevent structure. */
-            EV_SET(&chlist[event_idx++], client_fd, EVFILT_READ, EV_ADD, 0, 0, 0);
+        if(processes[pid].client->is_connected()){ // If client connection attempt was successful
+            add_fd_to_kqueue(processes[pid].client->get_socket_fd(), pid, false);
         }
     }
 
-    // Set cin to be non-blocking
-    int flags = fcntl(0, F_GETFL, 0);
-    fcntl(0, F_SETFL, flags | O_NONBLOCK);
-
     while(!end_session){
-        int fd = s->accept_client();
-        if(fd >= 0){
-            fd_information info;
-            info.pid = -1;
-            info.server_owned = true;
-            info.event_idx = event_idx;
-            std::pair<unsigned int, struct fd_information> entry(fd, info);
-            fd_info.insert(entry);
-
-            /* Initialize kevent structure. */
-            EV_SET(&chlist[event_idx++], fd, EVFILT_READ, EV_ADD, 0, 0, 0);
+        EV_SET(&server_event, s->get_socket_fd(), EVFILT_READ, EV_ENABLE, 0, 0, 0);
+        int nev = kevent(kq, &server_event, 1, &server_result, 1, &tmout); // Check for new connections to server
+        EV_SET(&server_event, s->get_socket_fd(), EVFILT_READ, EV_DISABLE, 0, 0, 0);
+        if(nev == 1){
+            for(int i = 0; i < server_result.data; i++){
+                int fd = s->accept_client();
+                if(fd >= 0){
+                    add_fd_to_kqueue(fd, -1, true);
+                }
+            }
         }
         process_fds();
         process_input();
-        // attempt_reconnections();
     }
 }
