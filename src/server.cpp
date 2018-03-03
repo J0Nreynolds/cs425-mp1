@@ -53,7 +53,7 @@ int Server::accept_client(){
 	if(client_fd >= 0){
 		int flags = fcntl(client_fd, F_GETFL, 0);
 		fcntl(client_fd, F_SETFL, flags | O_NONBLOCK);
-		std::cout << "Client with fd " << client_fd << " connected." << std::endl;
+		// std::cout << "Client with fd " << client_fd << " connected." << std::endl;
 		return client_fd;
 	}
 	return -1;

@@ -1,14 +1,14 @@
 #include <iostream>
 #include <list>
+#include <queue>
 #include <thread>
 #include <mutex>
 #include <chrono>
-#include <ctime>
 
 #include <signal.h>
+#include <time.h>
 #include <sys/types.h>
 #include <sys/event.h>
-#include <sys/time.h>
 
 #include "server.h"
 #include "client.h"
@@ -21,6 +21,7 @@ struct connection {   // Declare connection struct type
     std::string port;
     Client* client;
     int server_fd;
+    int timestamp;
 };
 
 struct fd_information {
@@ -29,8 +30,16 @@ struct fd_information {
     int event_idx;
 };
 
+struct message {
+    std::string text;
+    int pid;
+    int* V;
+};
+
 std::unordered_map<unsigned int, struct connection> processes;
 std::unordered_map<unsigned int, struct fd_information> fd_info;
+
+std::queue<struct message> hold_back_queue;
 
 unsigned int process_id;
 static Server* s;
@@ -40,7 +49,8 @@ static int event_idx = 0;
 static struct kevent* chlist;
 static struct kevent* evlist;
 static const struct timespec tmout = { 0, 0 };  /* return immediately if no new events */
-
+static int max_delay, min_delay = 0;
+static bool is_causally_ordered = false;
 
 /**
  * Initializes the unordered_map holding the information needed to connect to each process.
@@ -48,27 +58,39 @@ static const struct timespec tmout = { 0, 0 };  /* return immediately if no new 
 void parse_config(){
 	std::ifstream config_file("multicast.config");
 	std::string line;
+    bool first_line = true;
 	while (std::getline(config_file, line)){
-	    std::istringstream iss(line);
-	    unsigned int pid;
-		std::string ip, port;
-        // Get three arguments from each line
-	    if (!(iss >> pid >> ip >> port)) { // error
-			std::cout << "Error parsing config file!" << std::endl;
-			break;
-		}
+        std::istringstream iss(line);
+        if(first_line){
+            first_line = false;
+            // Get the delay arguments from the first line
+    	    if (!(iss >> min_delay >> max_delay)) { // error
+    			std::cout << "Error parsing config file!" << std::endl;
+    			break;
+    		}
+        }
+        else{
+    	    unsigned int pid;
+    		std::string ip, port;
+            // Get three arguments from each line
+    	    if (!(iss >> pid >> ip >> port)) { // error
+    			std::cout << "Error parsing config file!" << std::endl;
+    			break;
+    		}
 
-		// Create connection struct instance for hashmap
-		struct connection connection_info;
-		connection_info.ip = ip;
-		connection_info.port = port;
-		connection_info.client = NULL;
-		connection_info.server_fd = -1;
+    		// Create connection struct instance for hashmap
+    		struct connection connection_info;
+    		connection_info.ip = ip;
+    		connection_info.port = port;
+    		connection_info.client = NULL;
+    		connection_info.server_fd = -1;
+    		connection_info.timestamp = 0;
 
-		// Create pair for insertion
-		std::pair<unsigned int, struct connection> entry(pid, connection_info);
-		//Insert
-		processes.insert(entry);
+    		// Create pair for insertion
+    		std::pair<unsigned int, struct connection> entry(pid, connection_info);
+    		//Insert
+    		processes.insert(entry);
+        }
 	}
 }
 
@@ -101,6 +123,7 @@ void remove_fd_from_kqueue(int fd){
     // else event we want to remove is at end
     // -> do nothing, we already decremented the event_idx to exclude it from kevent call
 }
+
 /**
  * Adds kevent listener for file descriptor
  * If pid of process is unknown, a pid of -1 should be used to indicate that
@@ -120,13 +143,66 @@ void add_fd_to_kqueue(int fd, int pid, bool server_owned){
     EV_SET(&chlist[event_idx++], fd, EVFILT_READ, EV_ADD, 0, 0, 0);
 }
 
+/**
+ * Prepends an integer's bytes to a char array
+ */
+char* create_message(const char* message, int len, char protocol){
+    char* output = new char[len + sizeof(int) + sizeof(char)];
+    memcpy(output, &len, sizeof(int));
+    memcpy(output+sizeof(int), &protocol, sizeof(char));
+    memcpy(output+sizeof(int)+sizeof(char), message, len);
+    return output;
+}
+
+void delayed_usend(std::string message, int fd)
+{
+    //Format message
+    char* formatted_message = create_message(message.c_str(), message.size()+1, 'u');
+    int delay = rand()%(max_delay - min_delay) + min_delay;
+    //Sleep if not sending to self
+    if(fd_info[fd].pid != process_id) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    //Write message to socket
+    write_all_to_socket(fd, formatted_message, message.size()+1 + sizeof(char) + sizeof(int));
+    delete[] formatted_message;
+}
+
+void delayed_msend(std::string message, int fd)
+{
+    const char* cstr_message = message.c_str();
+    int len = message.size()+1;
+    char* formatted_message;
+    if(is_causally_ordered){
+        char* output = new char[len + sizeof(int)*processes.size()];
+        for(int i = 1; i <= processes.size(); i++){
+            int timestamp = processes[i].timestamp;
+            memcpy(output+(i-1)*sizeof(int), &timestamp, sizeof(int));
+        }
+        memcpy(output + processes.size()*sizeof(int), cstr_message, len);
+        len = processes.size()*sizeof(int) + len;
+        formatted_message = create_message(output, len, 'm');
+    }
+    else {
+        formatted_message = create_message(cstr_message, len, 'm');
+    }
+    //Format message
+    int delay = rand()%(max_delay - min_delay + 1) + min_delay;
+    //Sleep if not sending to self
+    if(fd_info[fd].pid != process_id) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    //Write message to socket
+    write_all_to_socket(fd, formatted_message, len + sizeof(char) + sizeof(int));
+    delete[] formatted_message;
+}
 
 void unicast_receive(int source, std::string message){
-    auto end = std::chrono::system_clock::now();
-    std::time_t end_time = std::chrono::system_clock::to_time_t(end);
-    __int64_t ms =  end.time_since_epoch().count();
-    std::cout << "MS: " << ms << std::endl;
-    std::cout << "Received \"" << message << "\" from process " << source <<  ", system time is " << std::ctime(&end_time) << std::endl;
+    __int64_t ms_past_epoch = std::chrono::duration_cast< std::chrono::milliseconds >(std::chrono::system_clock::now().time_since_epoch()).count();
+    __int64_t seconds_past_epoch = time(0);
+    int ms = ms_past_epoch - seconds_past_epoch*1000;
+    time_t theTime = time(NULL);
+    struct tm *aTime = localtime(&theTime);
+    int hour=aTime->tm_hour;
+    int min=aTime->tm_min;
+    int sec=aTime->tm_sec;
+    std::cout << "Received \"" << message << "\" from process " << source <<  ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
 }
 
 void unicast_send(int dest, std::string message){
@@ -135,13 +211,58 @@ void unicast_send(int dest, std::string message){
         std::cout << "Error: could not unicast send to non-existent pid" << std::endl;
         return;
     }
+    __int64_t ms_past_epoch = std::chrono::duration_cast< std::chrono::milliseconds >(std::chrono::system_clock::now().time_since_epoch()).count();
+    __int64_t seconds_past_epoch = time(0);
+    int ms = ms_past_epoch - seconds_past_epoch*1000;
+    time_t theTime = time(NULL);
+    struct tm *aTime = localtime(&theTime);
+    int hour=aTime->tm_hour;
+    int min=aTime->tm_min;
+    int sec=aTime->tm_sec;
     struct connection info = result->second;
-    std::cout << "Sending fd " << info.server_fd << ": '" << message <<  "' to pid: " << dest << std::endl;
-    write_all_to_socket(info.server_fd, message.c_str(), message.size()+1);
+    std::cout << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+    // Send a message with simulated delay
+    std::thread t(delayed_usend, message, info.server_fd);
+    t.detach();
+}
+
+void delivered(int source, std::string message){
+    __int64_t ms_past_epoch = std::chrono::duration_cast< std::chrono::milliseconds >(std::chrono::system_clock::now().time_since_epoch()).count();
+    __int64_t seconds_past_epoch = time(0);
+    int ms = ms_past_epoch - seconds_past_epoch*1000;
+    time_t theTime = time(NULL);
+    struct tm *aTime = localtime(&theTime);
+    int hour=aTime->tm_hour;
+    int min=aTime->tm_min;
+    int sec=aTime->tm_sec;
+    std::cout << "Message \"" << message << "\" from process " << source <<  " delivered. System time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+}
+
+void multicast_receive(int source, std::string message){
+    unicast_receive(source, message);
+    if(source != process_id) processes[source].timestamp += 1;
 }
 
 void multicast_send(std::string message){
-
+    __int64_t ms_past_epoch = std::chrono::duration_cast< std::chrono::milliseconds >(std::chrono::system_clock::now().time_since_epoch()).count();
+    __int64_t seconds_past_epoch = time(0);
+    int ms = ms_past_epoch - seconds_past_epoch*1000;
+    time_t theTime = time(NULL);
+    struct tm *aTime = localtime(&theTime);
+    int hour=aTime->tm_hour;
+    int min=aTime->tm_min;
+    int sec=aTime->tm_sec;
+    //Increment this process's timestamp
+    processes[process_id].timestamp += 1;
+    for(auto x: processes){
+        int dest = x.first;
+        struct connection info = x.second;
+        if(info.server_fd == -1) continue;
+        std::cout << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "0" : "") << ms << std::endl;
+        // Send a message with simulated delay
+        std::thread t(delayed_msend, message, info.server_fd);
+        t.detach();
+    }
 }
 
 /**
@@ -174,7 +295,7 @@ void process_fds(){
                 std::cout << "Error reading from socket" <<read_bytes<<std::endl;
                 exit(1);
         	}
-            std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
+            // std::cout << "Got id: " << pid << " from client with fd: " << fd << std::endl;
 
             // Update process info with server file descriptor
             struct connection& info = processes[pid];
@@ -182,20 +303,77 @@ void process_fds(){
             fd_info[fd].pid = pid;
 
             if(pid != process_id && !processes[pid].client->is_connected()){ // If we don't already have a client for pid
-                std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
+                // std::cout << "Attempting to connect back to server " << pid << " at port " << info.port << std::endl;
                 int client_fd = info.client->connect_to_server(info.ip, info.port);
                 if(client_fd >= 0){ // Success
                     add_fd_to_kqueue(client_fd, pid, false);
                 }
             }
         }
-        else { //Then there is an update from another server. TODO: Process the update.
+        else { //Then there is an update from another server.
+            // Get the num of bytes to read
+            int read_len;
+            read_all_from_socket(fd, (char *) &read_len, sizeof(int));
+            // Get the protocol (msend or usend)
+            char protocol;
+            read_all_from_socket(fd, &protocol, sizeof(char));
+            if(protocol == 'm'){
+                if(is_causally_ordered){
+                    struct message m;
+                    m.pid = fd_info[fd].pid;
+                    m.V = new int[processes.size()];
+                    char* read_bytes = new char[read_len];
+                    read_all_from_socket(fd, read_bytes, read_len);
+                    int timestamp;
 
-            int read_len = evlist[i].data;
-            std::cout << "Received message with " << read_len << " bytes from " << fd << std::endl;
-            char buf[evlist[i].data];
-            read_all_from_socket(fd, buf, read_len);
-            unicast_receive(fd_info[fd].pid, std::string(buf));
+                    for(int i = 0; i < processes.size(); i ++){
+                        memcpy(&timestamp, read_bytes+i*sizeof(int), sizeof(int));
+                        m.V[i] = timestamp;
+                    }
+
+                    m.text = std::string(read_bytes+sizeof(int)*processes.size());
+                    free(read_bytes);
+                    delivered(m.pid, m.text);
+                    hold_back_queue.push(m);
+                }
+            }
+            else {
+                // Read the message
+                char buf[read_len];
+                read_all_from_socket(fd, buf, read_len);
+                unicast_receive(fd_info[fd].pid, std::string(buf));
+            }
+        }
+    }
+}
+
+void check_queue(){
+    for(int j = 0; j < hold_back_queue.size(); j ++){
+        struct message m = hold_back_queue.front();
+        hold_back_queue.pop();
+
+        bool failed = false;
+        for(int i = 0 ; i < processes.size(); i ++){
+            int timestamp = m.V[i];
+            int pid = i+1;
+            if(m.pid == process_id) break;
+            if(pid == m.pid && timestamp != (processes[pid].timestamp + 1) ){
+                // Guarantees V_q[i] == V_p[i] + 1
+                failed = true;
+                break;
+            }
+            if(pid != m.pid && timestamp > (processes[pid].timestamp) ){
+                // Guarantees V_q[i] <= V_p[i]
+                failed = true;
+                break;
+            }
+        }
+        if(!failed){
+            delete[] m.V;
+            multicast_receive(m.pid, m.text);
+        }
+        else {
+            hold_back_queue.push(m);
         }
     }
 }
@@ -214,20 +392,14 @@ void process_input(){
     int space1_idx = line.find(' ', 0);
     if(space1_idx == std::string::npos){ return; } // incorrect command format - must have at least one space
     int space2_idx = line.find(' ', space1_idx+1);
-    if(space2_idx == std::string::npos){
+    command = line.substr(0, space1_idx);
+    if(command.compare("msend") == 0){
         // Must be a multicast send
-        command = line.substr(0, space1_idx);
         message = line.substr(space1_idx + 1, std::string::npos);
 
-        std::cout << "Command: " << command << std::endl;
-        std::cout << "Message: " << message << std::endl;
-
-        if(command.compare("msend") == 0){
-            multicast_send(message);
-        }
-        else {
-            std::cout << "Error: invalid command!" << std::endl;
-        }
+        // std::cout << "Command: " << command << std::endl;
+        // std::cout << "Message: " << message << std::endl;
+        multicast_send(message);
     }
     else {
         //Assume it's a unicast send
@@ -236,9 +408,9 @@ void process_input(){
         message = line.substr(space2_idx + 1, std::string::npos);
         sscanf(dest_string.c_str(), "%d", &destination);
 
-        std::cout << "Command: " << command << std::endl;
-        std::cout << "Destination: " << destination << std::endl;
-        std::cout << "Message: " << message << std::endl;
+        // std::cout << "Command: " << command << std::endl;
+        // std::cout << "Destination: " << destination << std::endl;
+        // std::cout << "Message: " << message << std::endl;
         if(command.compare("send") == 0){
             unicast_send(destination, message);
         }
@@ -277,7 +449,19 @@ void close_process(int sig){
 }
 
 int main(int argc, char **argv) {
-    std::cout << "Starting process with id " << argv[1] << std::endl;
+    if(argc == 3){
+        std::cout << "Starting process with id " << argv[1] << " using " << argv[2] << " ordering." << std::endl;
+        std::string protocol = argv[2];
+        if(protocol.compare("causal") == 0){
+            is_causally_ordered = true;
+        }
+        else {
+            is_causally_ordered = false;
+        }
+    }
+    else {
+        std::cout << "Starting process with id " << argv[1] << std::endl;
+    }
     sscanf(argv[1], "%d", &process_id);
 
     // Set cin to be non-blocking
@@ -329,5 +513,8 @@ int main(int argc, char **argv) {
         }
         process_fds();
         process_input();
+        if(!hold_back_queue.empty()){
+            check_queue();
+        }
     }
 }

@@ -35,14 +35,14 @@ int Client::connect_to_server(const std::string& ip, const std::string& port){
 		fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(s));
 		exit(1);
 	}
-	std::cout << "Process " << this->process_id << " attempting connect to server at port " << port << std::endl;
+	// std::cout << "Process " << this->process_id << " attempting connect to server at port " << port << std::endl;
 	if(connect(this->socket_fd, result->ai_addr, result->ai_addrlen) == -1){ // Connect to host using sock_fd and resulting addrinfo
 		::close(this->socket_fd);
-		perror("connect");
+		// perror("connect");
 		return -1;
     }
 	this->connected = true;
-	std::cout<< "Writing id: " << this->process_id << " from fd: " << this->socket_fd << std::endl;
+	// std::cout<< "Writing id: " << this->process_id << " from fd: " << this->socket_fd << std::endl;
 	int written = write_all_to_socket(this->socket_fd, (char *) &this->process_id, sizeof(int));
 	if(written != sizeof(int)){
 		std::cout << "Error: " << written << " bytes written instead of " << sizeof(int) << std::endl;
