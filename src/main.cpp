@@ -40,7 +40,7 @@ struct message {
 
 std::unordered_map<unsigned int, struct connection> processes;
 std::unordered_map<unsigned int, struct fd_information> fd_info;
-std::unordered_map<int, int> decisions;
+std::unordered_map<int, int>* decisions;
 
 std::queue<struct message> hold_back_queue;
 
@@ -56,8 +56,8 @@ static int max_delay, min_delay = 0;
 static bool is_causally_ordered = false;
 
 static int counter = 0;
+static int message_counter = 0;
 static bool sequencer = false;
-const static int sequencer_port = 4250;
 
 /**
  * Initializes the unordered_map holding the information needed to connect to each process.
@@ -203,11 +203,7 @@ void delayed_msend(std::string message, int fd)
     else {
         // Write the message id
         char* output = new char[len + sizeof(int)];
-        int id = 0;
-        for(int i = 1; i <= processes.size(); i++){
-            int timestamp = processes[i].timestamp;
-            id += timestamp * pow(10,i-1);
-        }
+        int id = message_counter;
         memcpy(output, &id, sizeof(int));
         // Write the message
         memcpy(output + sizeof(int), cstr_message, len);
@@ -218,7 +214,7 @@ void delayed_msend(std::string message, int fd)
     //Format message
     int delay = rand()%(max_delay - min_delay + 1) + min_delay;
     //Sleep if not sending to self
-    if(fd_info[fd].pid != process_id && process_id!=2) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
+    if(fd_info[fd].pid != process_id) std::this_thread::sleep_for(std::chrono::milliseconds(delay));
     //Write message to socket
     write_all_to_socket(fd, formatted_message, len + sizeof(char) + sizeof(int));
     delete[] formatted_message;
@@ -229,15 +225,16 @@ void delayed_msend(std::string message, int fd)
  * Thread function for sending delayed sequencer message. Sends particular protocol header and
  * increments necessary counter.
  */
-void delayed_sequencer_msend(int message_id, int fd){
-    int len = sizeof(int)*2;
+void delayed_sequencer_msend(int message_id, int fd, int pid){
+    int len = sizeof(int)*3;
     char* formatted_message;
 
     //Write info
     char* output = new char[len];
-    int decision = decisions[message_id];
-    memcpy(output, &message_id, sizeof(int));
-    memcpy(output+sizeof(int), &decision, sizeof(int));
+    int decision = decisions[pid - 1][message_id];
+    memcpy(output, &pid, sizeof(int));
+    memcpy(output+sizeof(int), &message_id, sizeof(int));
+    memcpy(output+2*sizeof(int), &decision, sizeof(int));
 
     formatted_message = create_message(output, len, 'o');
     delete[] output;
@@ -316,7 +313,7 @@ void multicast_receive(int source, std::string message){
 /**
  * Sends a sequencer message to the group
  */
-void sequencer_send(int message_id){
+void sequencer_send(int message_id, int pid){
     __int64_t ms_past_epoch = std::chrono::duration_cast< std::chrono::milliseconds >(std::chrono::system_clock::now().time_since_epoch()).count();
     __int64_t seconds_past_epoch = time(0);
     int ms = ms_past_epoch - seconds_past_epoch*1000;
@@ -327,14 +324,14 @@ void sequencer_send(int message_id){
     int sec=aTime->tm_sec;
 
     std::pair<int, int> entry(message_id, counter);
-    decisions.insert(entry);
+    decisions[pid-1].insert(entry);
     for(auto x: processes){
         int dest = x.first;
         struct connection info = x.second;
         if(info.server_fd == -1) continue;
         std::cout << "Sent sequence for message " << message_id << " to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
         // Send a message with simulated delay
-        std::thread t(delayed_sequencer_msend, message_id, info.server_fd);
+        std::thread t(delayed_sequencer_msend, message_id, info.server_fd, pid);
         t.detach();
     }
     // Increment the sequence number
@@ -356,6 +353,7 @@ void multicast_send(std::string message){
     int sec=aTime->tm_sec;
     //Increment this process's timestamp
     processes[process_id].timestamp += 1;
+    message_counter+=1;
     for(auto x: processes){
         int dest = x.first;
         struct connection info = x.second;
@@ -451,7 +449,7 @@ void process_fds(){
                     m.text = std::string(read_bytes+sizeof(int));
                     free(read_bytes);
                     delivered(m.pid, m.text);
-                    if(sequencer) sequencer_send(m.id);
+                    if(sequencer) sequencer_send(m.id, m.pid);
                     else hold_back_queue.push(m);
                 }
             }
@@ -462,14 +460,15 @@ void process_fds(){
                 unicast_receive(fd_info[fd].pid, std::string(buf));
             }
             else {
-                int id, decision;
+                int pid, id, decision;
                 char buf[read_len];
                 read_all_from_socket(fd, buf, read_len);
-                memcpy(&id, buf, sizeof(int));
-                memcpy(&decision, buf+sizeof(int), sizeof(int));
+                memcpy(&pid, buf, sizeof(int));
+                memcpy(&id, buf+sizeof(int), sizeof(int));
+                memcpy(&decision, buf+2*sizeof(int), sizeof(int));
                 // std::cout << "Decision: " << decision << " for message " << id << std::endl;
         		std::pair<int, int> entry(id, decision);
-                decisions.insert(entry);
+                decisions[pid-1].insert(entry);
             }
         }
     }
@@ -509,17 +508,17 @@ void check_queue(){
             }
         }
         else {
-            std::unordered_map<int, int>::const_iterator result = decisions.find(m.id);
-
+            std::unordered_map<int, int>::const_iterator result = decisions[m.pid-1].find(m.id);
+            // std::cout << m.text << " " << m.pid << " " << m.id <<std::endl;
             //If there hasn't been a sequencer decision yet
-            if(result == decisions.end()){
+            if(result == decisions[m.pid-1].end()){
                 hold_back_queue.push(m);
             }
             else {
-                int decision = decisions[m.id];
+                int decision = result->second;
                 if(counter == decision){
                     multicast_receive(m.pid, m.text);
-                    decisions.erase(m.id);
+                    decisions[m.pid-1].erase(m.id);
                 }
                 else {
                     // Wait till later
@@ -601,6 +600,7 @@ void close_process(int sig){
         struct connection info = x.second;
         delete info.client;
     }
+    delete[] decisions;
     end_session = true;
 }
 
@@ -639,6 +639,7 @@ int main(int argc, char **argv) {
     }
 
     parse_config();
+    decisions = new std::unordered_map<int, int>[processes.size()];
 
     chlist = new struct kevent[2*processes.size()]; // 2 fds per process
     evlist = new struct kevent[2*processes.size()]; // 2 fds per process
