@@ -10,8 +10,6 @@ C++ Multicast implementation. Option for simulated network delay and causal-orde
 
 `bin` — Holds all of the `.exe` files that are used to execute the search program
 
-`tex` — Hold the `.tex` file as well as all the related images used in the document
-
 ## How to Use
 The following command will start a process with supplied `pid` using the `port` and `ip` listed in `multicast.config`. The second argument chooses the ordering scheme (causal or total): 
 
