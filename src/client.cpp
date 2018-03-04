@@ -56,10 +56,16 @@ int Client::get_socket_fd(){
 	return this->socket_fd;
 }
 
+/**
+ * Returns the file descriptor of accepted socket of the client instance
+ */
 bool Client::is_connected(){
 	return this->connected;
 }
 
+/**
+ * Closes the file descriptor and sets connected to false
+ */
 void Client::close(){
 	::close(this->socket_fd);
 	this->connected = false;

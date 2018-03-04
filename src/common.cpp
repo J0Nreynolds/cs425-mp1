@@ -1,5 +1,8 @@
 #include "common.h"
 
+/**
+ * Helper that reads until "count" bytes has been read from the socket
+ */
 int read_all_from_socket(int socket, char *buffer, size_t count) {
 	int total_bytes = 0;
 	while(count){
@@ -17,6 +20,9 @@ int read_all_from_socket(int socket, char *buffer, size_t count) {
 	return total_bytes;
 }
 
+/**
+ * Helper that writes until "count" bytes have been written to the socket
+ */
 int write_all_to_socket(int socket, const char *buffer, size_t count) {
 	int total_bytes = 0;
 	while(count){

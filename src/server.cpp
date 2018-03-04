@@ -67,6 +67,9 @@ void Server::close(){
 }
 
 
+/**
+ * Returns the file descriptor of listening socket of the server instance
+ */
 int Server::get_socket_fd(){
 	return this->socket_fd;
 }
