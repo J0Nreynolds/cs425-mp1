@@ -14,6 +14,7 @@
 #include "server.h"
 #include "client.h"
 #include "common.h"
+#include "color.h"
 
 using namespace std;
 
@@ -259,7 +260,7 @@ void unicast_receive(int source, std::string message){
     int hour=aTime->tm_hour;
     int min=aTime->tm_min;
     int sec=aTime->tm_sec;
-    std::cout << "Received \"" << message << "\" from process " << source <<  ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+    std::cout << KGRN << "Received \"" << message << "\" from process " << source <<  ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << RST << std::endl;
 }
 
 /**
@@ -280,7 +281,7 @@ void unicast_send(int dest, std::string message){
     int min=aTime->tm_min;
     int sec=aTime->tm_sec;
     struct connection info = result->second;
-    std::cout << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+    std::cout << KRED << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << RST << std::endl;
     // Send a message with simulated delay
     std::thread t(delayed_usend, message, info.server_fd);
     t.detach();
@@ -298,7 +299,7 @@ void delivered(int source, std::string message){
     int hour=aTime->tm_hour;
     int min=aTime->tm_min;
     int sec=aTime->tm_sec;
-    std::cout << "Message \"" << message << "\" from process " << source <<  " delivered. System time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+    std::cout << KYEL << "Message \"" << message << "\" from process " << source <<  " delivered. System time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << RST << std::endl;
 }
 
 /**
@@ -329,7 +330,7 @@ void sequencer_send(int message_id, int pid){
         int dest = x.first;
         struct connection info = x.second;
         if(info.server_fd == -1) continue;
-        std::cout << "Sent sequence for message " << message_id << " to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << std::endl;
+        std::cout << KCYN << "Sent sequence for message " << message_id << " to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "00" : (ms < 100 ? "0" : "")) << ms << RST << std::endl;
         // Send a message with simulated delay
         std::thread t(delayed_sequencer_msend, message_id, info.server_fd, pid);
         t.detach();
@@ -358,7 +359,7 @@ void multicast_send(std::string message){
         int dest = x.first;
         struct connection info = x.second;
         if(info.server_fd == -1) continue;
-        std::cout << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "0" : "") << ms << std::endl;
+        std::cout << KRED << "Sent \"" << message << "\" to process " << dest << ", system time is " << hour <<":"<< (min<10 ? "0" : "") << min <<":"<< (sec<10 ? "0" : "")  << sec <<":"<< (ms<10 ? "0" : "") << ms << RST << std::endl;
         // Send a message with simulated delay
         std::thread t(delayed_msend, message, info.server_fd);
         t.detach();
